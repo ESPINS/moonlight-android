@@ -1,0 +1,76 @@
+# Build a signed nonRoot release APK for every v* tag and attach it to a GitHub
+# Release, which is what Obtainium tracks.
+#
+# Obtainium contract (the in-app link in app/build.gradle encodes it):
+#   - tag must be v<version>        -> versionExtractionRegEx "v(.+)"
+#   - APK asset name must contain "nonRoot" -> apkFilterRegEx "nonRoot"
+#   - the release must not be a draft
+#
+# Required repository secrets:
+#   KEYSTORE_B64       base64 of the release .jks
+#   KEYSTORE_PASSWORD  store password
+#   KEY_ALIAS          key alias
+#   KEY_PASSWORD       key password
+# Losing or rotating the key breaks updates for every installed copy.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The core (moonlight-common-c) is a submodule; without it ndkBuild fails.
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install the exact NDK
+        run: |
+          NDK=$(sed -n 's/.*ndkVersion "\(.*\)".*/\1/p' app/build.gradle)
+          echo "ndkVersion $NDK"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK" > /dev/null
+
+      - name: Restore keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "ARTEMIS_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
+      - name: Build
+        env:
+          ARTEMIS_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          ARTEMIS_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          ARTEMIS_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew --no-daemon assembleNonRoot_gameRelease
+
+      - name: Verify signature and name the asset
+        run: |
+          # One APK per build (no ABI splits). If splits ever come back, pick the
+          # asset deliberately instead of letting a glob choose.
+          APKS=$(find app/build/outputs/apk/nonRoot_game/release -name '*.apk')
+          [ "$(echo "$APKS" | wc -l)" -eq 1 ] || { echo "expected exactly one APK:"; echo "$APKS"; exit 1; }
+          APK=$APKS
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --print-certs "$APK"
+          OUT="Artemis-plus-${GITHUB_REF_NAME}-nonRoot.apk"
+          cp "$APK" "$OUT"
+          echo "ASSET=$OUT" >> "$GITHUB_ENV"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}
+          generate_release_notes: true

@@ -18,6 +18,20 @@ android {
         ndk.debugSymbolLevel = 'FULL'
     }
 
+    // Release signing comes from the environment so no key material lives in the
+    // repo. Set all four to sign; leave ARTEMIS_KEYSTORE unset for an unsigned build.
+    signingConfigs {
+        release {
+            def ks = System.getenv("ARTEMIS_KEYSTORE")
+            if (ks) {
+                storeFile file(ks)
+                storePassword System.getenv("ARTEMIS_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("ARTEMIS_KEY_ALIAS")
+                keyPassword System.getenv("ARTEMIS_KEY_PASSWORD")
+            }
+        }
+    }
+
     flavorDimensions.add("root")
 
     buildFeatures {
@@ -141,6 +155,10 @@ android {
 
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+
+            if (System.getenv("ARTEMIS_KEYSTORE")) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 
